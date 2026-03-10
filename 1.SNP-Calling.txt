@@ -1,0 +1,174 @@
+#1 
+
+bwa index YunhongNO.1_genome.fasta
+samtools faidx YunhongNO.1_genome.fasta
+gatk CreateSequenceDictionary -R YunhongNO.1_genome.fasta -O reference.dict
+
+#2
+
+#!/bin/bash
+
+parent_folder="/localstorage/home/dongle/343-686_cleandata/3all"
+
+trimmed_folder="/localstorage/home/dongle/343-686_cleandata/3all_trimmed"
+
+for folder in "$parent_folder"/*; do
+  if [ -d "$folder" ]; then   
+    sample_name=$(basename "$folder")
+    echo "Processing $sample_name..."
+    sample_trimmed_folder="$trimmed_folder/$sample_name"
+    mkdir -p "$sample_trimmed_folder"
+    fq1="$folder/${sample_name}_1.clean.fq.gz"
+    fq2="$folder/${sample_name}_2.clean.fq.gz"
+    out_fq1="$sample_trimmed_folder/${sample_name}_1.trimmed.fq.gz"
+    out_fq2="$sample_trimmed_folder/${sample_name}_2.trimmed.fq.gz"
+    fastp -w 5 \
+      -i "$fq1" \
+      -I "$fq2" \
+      -o "$out_fq1" \
+      -O "$out_fq2" \
+      --html "$sample_trimmed_folder/${sample_name}_fastp_report.html" \
+      --json "$sample_trimmed_folder/${sample_name}_fastp_report.json" \
+      -q 20 \
+      -u 30 \
+      --length_required 50 \
+      --length_limit 150
+    echo "Finished processing $sample_name"
+  fi
+done
+echo "All samples processed."
+
+#3 
+
+#!/bin/bash
+
+trimmed_folder="/localstorage/home/dongle/343-686_cleandata/3-1_trimmed"
+
+reference_genome="/localstorage/home/dongle/343-686_cleandata/YunhongNO_1.genome.fasta"
+
+aligned_folder="/localstorage/home/dongle/343-686_cleandata/bwa_3-1"
+
+bwa_commands_file="bwa_3-1commands.list"
+
+> "$bwa_commands_file"
+
+for folder in "$trimmed_folder"/*; do
+    if [ -d "$folder" ]; then
+        sample_name=$(basename "$folder")
+        fq1="$folder/${sample_name}_1.trimmed.fq.gz"
+        fq2="$folder/${sample_name}_2.trimmed.fq.gz"
+        sam="$aligned_folder/${sample_name}.aligned.sam"
+        echo "bwa mem -t 5 -R '@RG\tID:$sample_name\tSM:$sample_name\tPL:illumina\tLB:lib1' $reference_genome $fq1 $fq2 > $sam" >> "$bwa_commands_file"
+    fi
+done
+
+ParaFly -c "$bwa_commands_file" -CPU 5
+
+#4 
+#!/bin/bash
+
+sam_folder="/localstorage/home/dongle/343-686_cleandata/bwa_3-1"
+
+bam_folder="/localstorage/home/dongle/343-686_cleandata/bam_3-1"
+
+mkdir -p "$bam_folder"
+
+commands_file="/localstorage/home/dongle/343-686_cleandata/bam_3-1_commands.list"
+
+
+> "$commands_file"
+
+for sam_file in "$sam_folder"/*.sam; do
+    bam_file="${bam_folder}/$(basename "${sam_file%.sam}.bam")"
+    echo "samtools view -b $sam_file > $bam_file && rm $sam_file" >> "$commands_file"
+done
+
+
+ParaFly -c "$commands_file" -CPU 5
+
+#5 
+#!/bin/bash
+
+bam_folder="/localstorage/home/dongle/cleandata_cu1/sort1"
+
+sorted_bam_folder="/localstorage/home/dongle/343-686_cleandata/sort_bam"
+
+mkdir -p "$sorted_bam_folder"
+
+commands_file="/localstorage/home/dongle/343-686_cleandata/sort4-3-4_commands.list"
+
+> "$commands_file"
+
+for bam_file in "$bam_folder"/*.bam; do
+    sorted_bam_file="${sorted_bam_folder}/$(basename "${bam_file%.bam}.sorted.bam")"
+    echo "gatk SortSam -I $bam_file -O $sorted_bam_file -SO coordinate" >> "$commands_file"
+done
+
+ParaFly -c "$commands_file" -CPU 5
+
+#6 
+#!/bin/bash
+
+input_folder="/localstorage/home/dongle/343-686_cleandata/sort-A"
+output_folder="/localstorage/home/dongle/343-686_cleandata/duplicates"
+output_commands_file="sort-A_markduplicates_commands.txt"
+
+mkdir -p $output_folder
+
+> $output_commands_file
+
+bam_files=$(ls $input_folder/*.sorted.bam)
+
+for bam_file in $bam_files
+do
+
+    filename=$(basename -- "$bam_file")
+
+    base_name="${filename%.*}"
+
+    echo "gatk MarkDuplicates -I $bam_file -O $output_folder/${base_name}.marked_duplicates.bam -M $output_folder/${base_name}_marked_dup_metrics.txt" >> $output_commands_file
+done
+echo "Commands written to $output_commands_file"
+
+
+#7 
+#!/bin/bash
+
+bam_folder="/localstorage/home/dongle/343-686_cleandata/duplicateA"
+
+for bam_file in ${bam_folder}/*.bam; do
+    echo "Indexing ${bam_file}..."
+    samtools index ${bam_file}
+done
+echo "All BAM files have been indexed."
+
+
+#8
+#!/bin/bash
+
+input_folder="/localstorage/home/dongle/343-686_cleandata/duplicateA2"
+
+output_folder="/localstorage/home/dongle/343-686_cleandata/haplotypecaller"
+
+reference_genome="/localstorage/home/dongle/343-686_cleandata/YunhongNO_1.genome.fasta"
+
+output_commands_file="haplotypecallerA2_commands.txt"
+
+mkdir -p $output_folder
+
+> $output_commands_file
+
+bam_files=$(ls $input_folder/*.marked_duplicates.bam)
+
+for bam_file in $bam_files
+do
+
+    filename=$(basename -- "$bam_file")
+
+    base_name="${filename%.marked_duplicates.bam}"
+
+    echo "gatk --java-options \"-Xmx8g -Xms6g\" HaplotypeCaller -I $bam_file -O $output_folder/${base_name}.g.vcf.gz -R $reference_genome -ERC GVCF" >> $output_commands_file
+done
+
+echo "Commands written to $output_commands_file"
+
