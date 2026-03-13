@@ -1,0 +1,123 @@
+#!/bin/bash
+#BSUB -J perl
+#BSUB -n 10  
+#BSUB -q normal  
+#BSUB -R "rusage[mem=100G]"  
+#BSUB -o filter_ID.log  
+#BSUB -e filter_ID.log  
+#BSUB -m node03  
+
+plink --vcf 668_SNP_maf003_mis09_DP4_ID.vcf.gz --make-bed --out 668pca
+
+plink --bfile 668pca --geno 0.1 --maf 0.03 --hwe 0.00001 --make-bed --out 668pca_filter
+
+plink --bfile 668pca_filter --pca --out pca_result_668
+
+#R
+# PCA with confidence ellipse
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+})
+
+## ==========
+ELLIPSE_LEVEL <- 0.99
+ELLIPSE_TYPE  <- "norm"
+POINT_SIZE    <- 2.2
+
+AXIS_TEXT_SIZE    <- 14
+AXIS_TITLE_SIZE   <- 16
+LEGEND_TEXT_SIZE  <- 13
+LEGEND_TITLE_SIZE <- 15
+
+## ==========
+out_dir <- choose.dir(caption = "")
+eigvec_file <- file.choose()
+eigval_file <- file.choose()
+group_file  <- file.choose()
+
+## ==========
+E <- fread(eigvec_file, header = FALSE)
+setnames(E, c("FID","IID", paste0("PC", 1:(ncol(E)-2))))
+evals   <- scan(eigval_file, quiet = TRUE)
+var_exp <- evals / sum(evals) * 100
+
+G  <- fread(group_file, header = TRUE)
+DT <- merge(E, G, by.x = "IID", by.y = "Sample", all.x = TRUE)
+DT2 <- DT[complete.cases(PC1, PC2, Group)]
+DT2$Group <- droplevels(factor(DT2$Group))
+
+## ==========
+group_colors <- c(
+  "Hybridization"    = "skyblue",
+  "P.bretschneideri" = "#E58579",
+  "P.communis"       = "pink",
+  "P.pyrifolia"      = "#D9BDD8",
+  "P.ussuriensis"    = "#9DD0C7"
+)
+group_shapes <- c(
+  "Hybridization"    = 23,
+  "P.bretschneideri" = 24,
+  "P.communis"       = 22,
+  "P.pyrifolia"      = 21,
+  "P.ussuriensis"    = 25
+)
+
+lab_pc1 <- sprintf("PC1 (%.1f%%)", var_exp[1])
+lab_pc2 <- sprintf("PC2 (%.1f%%)", var_exp[2])
+
+## ==========
+base_theme <- theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    
+    # ==========
+    panel.border = element_rect(
+      fill  = NA,
+      color = "black",
+      size  = 1.2
+    ),
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.ticks = element_line(color = "black", size = 0.8),
+    axis.ticks.length = unit(-0.3, "cm"),     
+    axis.text  = element_text(size = AXIS_TEXT_SIZE, color = "black"),
+    axis.title = element_text(size = AXIS_TITLE_SIZE),
+    legend.position = c(0.98, 0.02),
+    legend.justification = c("right", "bottom"), 
+    legend.title = element_text(size = LEGEND_TITLE_SIZE),
+    legend.text  = element_text(size = LEGEND_TEXT_SIZE),
+    legend.background = element_blank(),
+    legend.key = element_blank()
+  )
+
+
+## ===== PCA figure =====
+p_pca <- ggplot(
+  DT2,
+  aes(PC1, PC2, color = Group, fill = Group, shape = Group)
+) +
+  stat_ellipse(
+    geom  = "polygon",
+    alpha = 0.18,
+    color = NA,
+    type  = ELLIPSE_TYPE,
+    level = ELLIPSE_LEVEL
+  ) +
+  geom_point(size = POINT_SIZE) +
+  scale_color_manual(values = group_colors, name = "Group") +
+  scale_fill_manual(values = group_colors,  name = "Group") +
+  scale_shape_manual(values = group_shapes, name = "Group") +
+  geom_hline(yintercept = 0, linetype = "dashed", size = .6, color = "gray60") +
+  geom_vline(xintercept = 0, linetype = "dashed", size = .6, color = "gray60") +
+  labs(x = lab_pc1, y = lab_pc2) +
+  base_theme
+
+## ===== Output =====
+ggsave(
+  file.path(out_dir, "PCA_PC1_PC2_ellipse_final.png"),
+  p_pca, width = 10, height = 10, dpi = 300
+)
+ggsave(
+  file.path(out_dir, "PCA_PC1_PC2_ellipse_final.pdf"),
+  p_pca, width = 10, height = 10
+)

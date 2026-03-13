@@ -1,0 +1,17 @@
+bcftools view test.maf0.05.int0.9.prune.in.vcf | \
+awk 'BEGIN{OFS="\t"} !/^#/{$1=sprintf("Chr%02d",$1)}1' > test_modified.vcf
+
+#!/bin/bash
+input_dir="/localstorage/home/dongle/668ldblock/result_pca"
+output_dir="/localstorage/home/dongle/668ldblock/txt"
+
+mkdir -p "$output_dir"
+
+for ps_file in "$input_dir"/*; do
+    base_name=$(basename "$ps_file" .ps)
+    output_file="$output_dir/${base_name}.txt"
+    awk -F'[_\t]' '{print $1, $2, $5}' "$ps_file" > "$output_file"
+    echo "Processed: $ps_file -> $output_file"
+done
+
+LDBlockShow -InVCF test_modified.vcf -OutPut /localstorage/home/dongle/668ldblock/blockshow/ssc_select_chr07_1 -Region Chr07:6714794-7114794 -InGWAS 25.Soluble_solids_content_gwas_result.txt -OutPng -SeleVar 3 -TopSite -NumGradien 10

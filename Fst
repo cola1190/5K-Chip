@@ -1,0 +1,132 @@
+#!/bin/bash
+#BSUB -J fst1 
+#BSUB -n 10  
+#BSUB -q normal  
+#BSUB -R "rusage[mem=50G]"  
+#BSUB -o fst1.log  
+#BSUB -e fst1.log  
+#BSUB -m node04  
+
+vcftools –gzvcf 668_SNP_maf003_mis09_DP4_ID.vcf.gz --weir-fst-pop ussuriensis.txt --weir-fst-pop communis.txt --fst-window-size 10000 --fst-window-step 5000 --out P_communis_vs_P_ussuriensis_Fst
+
+vcftools --gzvcf 668_SNP_maf003_mis09_DP4_ID.vcf.gz --weir-fst-pop communis.txt --weir-fst-pop sha_bai_li.txt --fst-window-size 10000 --fst-window-step 5000 --out P_communis_vs_P_pyrifolia_Fst
+
+vcftools --gzvcf 668_SNP_maf003_mis09_DP4_ID.vcf.gz --weir-fst-pop ussuriensis.txt --weir-fst-pop sha_bai_li.txt --fst-window-size 10000 --fst-window-step 5000 --out P_ussuriensis_vs_P_pyrifolia_Fst
+
+R
+# ==========
+out_dir <- choose.dir("")
+message("", out_dir)
+
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+  library(tcltk)
+  library(data.table)
+})
+
+# ==========
+file_paths <- tk_choose.files(caption = "")
+
+# ==========
+fst_data_list <- lapply(file_paths, function(path) {
+  df <- fread(path)
+  if (!"WEIGHTED_FST" %in% names(df)) {
+    stop(paste("WEIGHTED_FST:", basename(path)))
+  }
+  
+  comp <- basename(path)
+  comp <- sub("_Fst\\.windowed\\.weir\\.fst$", "", comp)
+  comp <- gsub("_vs_", " vs ", comp)
+  comp <- gsub("_", ".", comp)
+  
+  df %>%
+    rename(Fst = WEIGHTED_FST) %>%
+    mutate(Comparison = comp)
+})
+
+fst_data <- bind_rows(fst_data_list) %>%
+  filter(!is.na(Fst) & Fst >= 0)
+
+# ==========
+wanted <- c(
+  "P.communis vs P.pyrifolia",
+  "P.communis vs P.ussuriensis",
+  "P.pyrifolia vs P.ussuriensis"
+)
+
+fst_sel <- fst_data %>%
+  filter(Comparison %in% wanted) %>%
+  droplevels()
+
+fst_sel$Comparison <- factor(fst_sel$Comparison, levels = wanted)
+
+# ==========
+custom_colors <- c(
+  "P.communis vs P.pyrifolia"    = "#E64B35",
+  "P.communis vs P.ussuriensis"  = "#4DBBD5",
+  "P.pyrifolia vs P.ussuriensis" = "#BEBADF"
+)
+
+# ==========
+p_density <- ggplot(
+  fst_sel,
+  aes(x = Fst, fill = Comparison, color = Comparison)
+) +
+  geom_density(alpha = 0.35, linewidth = 1.2) +
+  scale_fill_manual(values = custom_colors) +
+  scale_color_manual(values = custom_colors) +
+  scale_x_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, 0.2)
+  ) +
+  labs(
+    x = "FST",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 20) +
+  
+  theme(
+    ## ==========
+    plot.title = element_blank(),
+    
+    ## ==========
+    panel.border = element_rect(
+      color = "black",
+      fill  = NA,
+      linewidth = 1.8
+    ),
+    
+    ## ==========
+    axis.ticks = element_line(color = "black", linewidth = 1),
+    axis.ticks.length = unit(-0.25, "cm"),
+    
+    ## ==========
+    axis.text  = element_text(size = 18, color = "black"),
+    axis.title = element_text(size = 22, color = "black"),
+    legend.position = c(0.72, 0.75),
+    legend.title = element_blank(),
+    legend.background = element_blank(),
+    legend.key = element_blank(),
+    legend.text = element_text(size = 18),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+print(p_density)
+
+# ==========
+ggsave(
+  file.path(out_dir, "FST_density_three_groups_clean.png"),
+  p_density,
+  width = 10,
+  height = 7,
+  dpi = 300
+)
+
+ggsave(
+  file.path(out_dir, "FST_density_three_groups_clean.pdf"),
+  p_density,
+  width = 10,
+  height = 7
+)

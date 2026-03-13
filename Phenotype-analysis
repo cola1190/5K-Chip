@@ -1,0 +1,336 @@
+# R
+
+suppressPackageStartupMessages({
+  library(data.table)
+  library(ggplot2)
+  library(viridis)
+  library(ggnewscale)
+  library(colorspace)
+  library(patchwork)
+})
+
+## ========================
+points_on_top   <- FALSE
+density_alpha   <- 0.85
+min_ndensity    <- 0.20
+density_palette <- "plasma"
+
+hist_fill   <- "#E5CCE5"
+density_col <- "#830783"
+
+bin_deep  <- c("0"="#5867AF","1"="#ED6F6E")
+bin_light <- c("0"=lighten("#5867AF", 0.35),
+               "1"=lighten("#ED6F6E",  0.35))
+
+ord_deep11  <- c("1"="#4C78A8","2"="#9C755F","3"="#59A14F","4"="#F28E2B","5"="#EDC948",
+                 "6"="#B07AA1","7"="#E15759","8"="#76B7B2","9"="#FF9DA7","10"="#8CD17D","11"="#B6992D")
+ord_deep    <- c("0"="#7F7F7F", ord_deep11)
+ord_light   <- sapply(ord_deep, \(z) lighten(z, 0.35))
+
+save_both <- function(path_no_ext, plot, width, height, dpi=300){
+  ggsave(paste0(path_no_ext,".png"), plot, width=width, height=height, dpi=dpi)
+  ggsave(paste0(path_no_ext,".pdf"), plot, width=width, height=height,
+         device = if (capabilities("cairo")) cairo_pdf else "pdf")
+}
+safe    <- function(s) gsub("_+","_", gsub("[^A-Za-z0-9._-]+","_", s))
+p_stars <- function(p) if (is.na(p)) "ns" else if (p<1e-3) "***" else if (p<1e-2) "**" else if (p<.05) "*" else "ns"
+
+pearson_r  <- function(x,y){ ok<-complete.cases(x,y); if(sum(ok)<3) return(list(r=NA,p=NA))
+ct<-suppressWarnings(cor.test(x[ok],y[ok],method="pearson")); list(r=unname(ct$estimate),p=ct$p.value) }
+spearman_r <- function(x,y){ ok<-complete.cases(x,y); if(sum(ok)<3) return(list(rho=NA,p=NA))
+ct<-suppressWarnings(cor.test(x[ok],y[ok],method="spearman")); list(rho=unname(ct$estimate),p=ct$p.value) }
+
+is_binary  <- function(v){ is.numeric(v) && {u<-unique(na.omit(v)); length(u)<=2 && all(u %in% c(0,1))} }
+is_ordinal <- function(v){ is.numeric(v) && {u<-unique(na.omit(v)); length(u)>=3 && length(u)<=12 && all(abs(u-round(u))<1e-8)} }
+is_cont    <- function(v){ is.numeric(v) && !is_binary(v) && !is_ordinal(v) }
+type_of <- function(v) if (is_binary(v)) "binary" else if (is_ordinal(v)) "ordinal" else if (is_cont(v)) "continuous" else "other"
+
+panel_border <- theme(panel.border = element_rect(color="black", fill=NA, linewidth = 0.6))
+
+bin_pvalue <- function(x, y){
+  ok <- complete.cases(x,y); x <- x[ok]; y <- y[ok]
+  if (length(unique(x))<2 || length(y)<3) return(NA_real_)
+  tryCatch(wilcox.test(y ~ x)$p.value, error=function(e) NA_real_)
+}
+
+add_sig_bracket <- function(p, xmin=1, xmax=2, y_top, pad=0.06, stars="ns"){
+  b <- ggplot_build(p); yrng <- b$layout$panel_params[[1]]$y.range
+  span <- diff(yrng)
+  yb <- y_top + pad*span
+  yt <- yb + 0.018*span
+  p +
+    annotate("segment", x=xmin, xend=xmax, y=yb, yend=yb, size=0.6) +
+    annotate("segment", x=xmin, xend=xmin, y=yb, yend=yb-0.012*span, size=0.6) +
+    annotate("segment", x=xmax, xend=xmax, y=yb, yend=yb-0.012*span, size=0.6) +
+    annotate("text", x=(xmin+xmax)/2, y=yt, label=stars, size=4.2)
+}
+
+generate_all <- function(X_in, out_root,
+                         dpi_png = 300, w_hist=2.8, h_hist=2.2, w_pair=2.2, h_pair=2.0){
+  
+  mk <- function(d) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+  d_pair_heat <- file.path(out_root, "pair_heatmaps");     mk(d_pair_heat)
+  d_pair_diag <- file.path(out_root, "pair_hist_diag");    mk(d_pair_diag)
+  d_main      <- file.path(out_root, "main_matrix");       mk(d_main)
+  d_supp_full <- file.path(out_root, "supp_plots_full");   mk(d_supp_full)
+  d_bin_copy  <- file.path(out_root, "binary_sig_only");   mk(d_bin_copy)   ”
+  d_tables    <- file.path(out_root, "supp_tables");       mk(d_tables)
+  
+  var_types <- vapply(X_in, type_of, character(1))
+  X <- X_in[names(var_types)[var_types %in% c("continuous","binary","ordinal")]]
+  var_types <- var_types[names(var_types) %in% names(X)]
+  cont_cols <- names(var_types)[var_types=="continuous"]
+  bin_cols  <- names(var_types)[var_types=="binary"]
+  ord_cols  <- names(var_types)[var_types=="ordinal"]
+  if (length(cont_cols) < 2) stop("")
+  
+  diag_list <- vector("list", length(cont_cols))
+  for (i in seq_along(cont_cols)) {
+    yn <- cont_cols[i]; vv <- X[[yn]]; vv <- vv[!is.na(vv)]
+    if (length(vv) < 3) next
+    rng <- range(vv); bw <- diff(rng)/30; n <- length(vv)
+    d <- density(vv); ddf <- data.frame(x=d$x, y=d$y * n * bw)
+    
+    pdiag <- ggplot(data.frame(v=vv), aes(x=v)) +
+      geom_histogram(binwidth=bw, color="white", fill=hist_fill, linewidth=.25, boundary=min(vv)) +
+      geom_line(data=ddf, aes(x=x, y=y), inherit.aes=FALSE, color=density_col, linewidth=.9) +
+      theme_classic(base_size=10) +
+      ylab("Count") + xlab(NULL)                                  
+    diag_list[[i]] <- pdiag
+    save_both(file.path(d_pair_diag, paste0(sprintf("%02d_",i), safe(yn))), pdiag, w_hist, h_hist, dpi_png)
+  }
+  
+  heat_list <- vector("list", length(cont_cols))
+  for (i in seq_along(cont_cols)) {
+    yn <- cont_cols[i]
+    row_list <- vector("list", i-1)
+    for (j in seq_len(i-1)) {
+      xn <- cont_cols[j]
+      df <- data.frame(x = X[[xn]], y = X[[yn]])
+      df <- df[complete.cases(df), ]; if (nrow(df)<3) next
+      pr <- pearson_r(df$x, df$y); sp <- spearman_r(df$x, df$y)
+      top_lab <- sprintf("R: %.2f%s   \u03C1: %.2f%s", pr$r, p_stars(pr$p), sp$rho, p_stars(sp$p))
+      
+      g <- ggplot(df, aes(x=x, y=y))
+      if (!points_on_top) g <- g + geom_point(size=.35, color="black")
+      g <- g + stat_density_2d_filled(
+        aes(fill = after_stat(level)),
+        contour_var = "ndensity",
+        breaks = seq(min_ndensity, 1, by = 0.1),
+        alpha = density_alpha, show.legend = FALSE
+      )
+      if (points_on_top) g <- g + geom_point(size=.35, color="black")
+      
+      xmid <- mean(range(df$x, na.rm=TRUE))
+      p <- g +
+        scale_fill_viridis_d(option = density_palette) +
+        theme_classic(base_size=10) +
+        theme(legend.position="none", axis.title=element_blank(),
+              plot.margin = margin(t=18, r=6, b=6, l=6)) +
+        coord_cartesian(clip = "off") +
+        annotate("text", x = xmid, y = Inf, label = top_lab,
+                 hjust = 0.5, vjust = -0.7, size = 3.8)
+      
+      row_list[[j]] <- p
+      fname_prefix <- sprintf("%02d_%s__%02d_%s", i, safe(yn), j, safe(xn))
+      save_both(file.path(d_pair_heat, paste0("heat__", fname_prefix)), p, w_pair, h_pair, dpi_png)
+    }
+    heat_list[[i]] <- row_list
+  }
+  
+  n <- length(cont_cols)
+  row_plots <- vector("list", n)
+  for (i in seq_len(n)) {
+    cells <- vector("list", n)
+    for (j in seq_len(n)) {
+      cells[[j]] <- if (j > i) patchwork::plot_spacer() else if (j == i) diag_list[[i]] else heat_list[[i]][[j]]
+    }
+    row_plots[[i]] <- wrap_plots(cells, nrow=1)
+  }
+  big <- wrap_plots(row_plots, ncol=1)
+  save_both(file.path(d_main, "continuous_correlation_matrix_rawOnly"), big,
+            width = max(6, 1.6*n), height = max(6, 1.6*n), dpi = dpi_png)
+  
+  violin_bin_with_and_without_sig <- function(df, outfile_with_sig_noext, outfile_clean_noext){
+    df <- df[complete.cases(df), ]; if (nrow(df)<3) return(invisible(NULL))
+    df$x <- factor(df$x, levels=c(0,1))
+    pval  <- bin_pvalue(as.numeric(as.character(df$x)), df$y)
+    stars <- p_stars(pval)
+    
+    base_common <- ggplot(df, aes(x=x, y=y, fill=x)) +
+      geom_violin(color="grey30", linewidth=.4, trim=FALSE, alpha=0.5) +
+      scale_fill_manual(values = bin_light, drop = FALSE) +
+      ggnewscale::new_scale_fill() +
+      geom_boxplot(aes(fill=x), color="black", width=.20, linewidth=.6, outlier.size=1.0) +
+      scale_fill_manual(values = bin_deep, drop = FALSE) +
+      theme_classic(base_size=10) +
+      theme(legend.position="none", axis.title=element_blank()) +
+      panel_border
+    
+    yr <- range(df$y, na.rm=TRUE)
+    y_top <- max(df$y, na.rm=TRUE)
+    headroom <- max(0.25 * diff(yr), 0.1*abs(y_top) + 1)
+    ylim_upper <- y_top + headroom
+    
+    p_sig <- base_common + coord_cartesian(ylim = c(yr[1], ylim_upper), clip = "on")
+    p_sig <- add_sig_bracket(p_sig, xmin=1, xmax=2, y_top=y_top, pad=0.08, stars=stars)
+    save_both(outfile_with_sig_noext, p_sig, width=4.8, height=3.3, dpi=dpi_png)
+    
+    p_clean <- base_common + coord_cartesian(ylim = c(yr[1], ylim_upper), clip = "on")
+    save_both(outfile_clean_noext, p_clean, width=4.8, height=3.3, dpi=dpi_png)
+    invisible(NULL)
+  }
+  
+  for (yn in cont_cols) for (xn in bin_cols) {
+    df <- data.frame(x = X[[xn]], y = X[[yn]])
+    base_name <- paste0("cont_vs_binary__", safe(yn), "__", safe(xn))
+    violin_bin_with_and_without_sig(
+      df,
+      outfile_with_sig_noext = file.path(d_supp_full, base_name),
+      outfile_clean_noext    = file.path(d_bin_copy,  base_name)
+    )
+  }
+  
+  violin_ord <- function(df, outfile_noext){
+    df <- df[complete.cases(df), ]; if (nrow(df)<3) return(invisible(NULL))
+    sd_by_level <- by(df$y, INDICES = df$x, FUN = function(v) sd(v))
+    drop_levels <- names(sd_by_level)[!is.na(sd_by_level) & sd_by_level == 0]
+    df <- df[!(df$x %in% drop_levels), ]
+    if (length(unique(df$x)) < 1) return(invisible(NULL))
+    
+    levs <- sort(unique(as.integer(df$x)))
+    df$x <- factor(as.integer(df$x), levels = levs)
+    deep  <- setNames(ord_deep [as.character(levs)], levs)
+    light <- setNames(ord_light[as.character(levs)], levs)
+    
+    p <- ggplot(df, aes(x=x, y=y, fill=x)) +
+      geom_violin(color="grey30", linewidth=.4, trim=FALSE, alpha=0.5) +
+      scale_fill_manual(values = light, drop = TRUE) +
+      ggnewscale::new_scale_fill() +
+      geom_boxplot(aes(fill=x), color="black", width=.20, linewidth=.6, outlier.size=1.0) +
+      scale_fill_manual(values = deep, drop = TRUE) +
+      theme_classic(base_size=10) +
+      theme(legend.position="none", axis.title=element_blank()) +
+      panel_border
+    save_both(outfile_noext, p, width=5.4, height=3.2, dpi=dpi_png)
+    invisible(NULL)
+  }
+  
+  for (yn in cont_cols) for (xn in ord_cols) {
+    df <- data.frame(x = X[[xn]], y = X[[yn]])
+    violin_ord(df, file.path(d_supp_full,
+                             paste0("cont_vs_ordinal__", safe(yn), "__", safe(xn))))
+  }
+  
+  CC <- rbindlist(lapply(seq_along(cont_cols), function(i){
+    yn <- cont_cols[i]
+    rbindlist(lapply(seq_len(i-1), function(j){
+      xn <- cont_cols[j]
+      df <- data.frame(x=X[[xn]], y=X[[yn]]); df <- df[complete.cases(df),]
+      pr <- pearson_r(df$x, df$y); sp <- spearman_r(df$x, df$y)
+      data.table(x=xn, y=yn, pearson_r=pr$r, pearson_p=pr$p, spearman_rho=sp$rho, spearman_p=sp$p, n=nrow(df))
+    }))
+  }), fill=TRUE)
+  fwrite(CC, file.path(d_tables, "cont_cont_cor_raw.csv"))
+  
+  CB <- rbindlist(lapply(cont_cols, function(yn){
+    rbindlist(lapply(bin_cols, function(xn){
+      df <- data.frame(x=X[[xn]], y=X[[yn]]); df <- df[complete.cases(df),]; if (nrow(df)<3) return(NULL)
+      p <- bin_pvalue(df$x, df$y)
+      data.table(cont=yn, binary=xn, wilcox_p=p,
+                 n0=sum(df$x==0), n1=sum(df$x==1),
+                 median0=median(df$y[df$x==0]), median1=median(df$y[df$x==1]),
+                 diff_median = median(df$y[df$x==1]) - median(df$y[df$x==0]))
+    }))
+  }), fill=TRUE)
+  fwrite(CB, file.path(d_tables, "cont_bin_wilcox_raw.csv"))
+  
+  CO <- rbindlist(lapply(cont_cols, function(yn){
+    rbindlist(lapply(ord_cols, function(xn){
+      df <- data.frame(x=X[[xn]], y=X[[yn]]); df <- df[complete.cases(df),]; if (nrow(df)<3) return(NULL)
+      sp <- spearman_r(as.numeric(df$x), df$y)
+      data.table(cont=yn, ordinal=xn, spearman_rho=sp$rho, spearman_p=sp$p, n=nrow(df))
+    }))
+  }), fill=TRUE)
+  fwrite(CO, file.path(d_tables, "cont_ord_spearman_raw.csv"))
+  
+  BB <- rbindlist(lapply(bin_cols, function(a){
+    rbindlist(lapply(setdiff(bin_cols, a), function(b){
+      df <- data.frame(a=X[[a]], b=X[[b]]); df <- df[complete.cases(df),]
+      if (nrow(df)==0) return(NULL)
+      tab <- table(df$a, df$b)
+      test <- if (any(tab < 5)) fisher.test(tab) else chisq.test(tab, correct=FALSE)
+      data.table(bin1=a, bin2=b, method=if (any(tab<5)) "Fisher" else "ChiSq",
+                 stat=unname(test$statistic), p=unname(test$p.value),
+                 n=nrow(df))
+    }))
+  }), fill=TRUE)
+  fwrite(BB, file.path(d_tables, "bin_bin_tests_raw.csv"))
+  
+  BO <- rbindlist(lapply(bin_cols, function(a){
+    rbindlist(lapply(ord_cols, function(b){
+      df <- data.frame(a=X[[a]], b=X[[b]]); df <- df[complete.cases(df),]
+      if (nrow(df)<3) return(NULL)
+      pW <- tryCatch(wilcox.test(as.numeric(df$b) ~ df$a)$p.value, error=function(e) NA_real_)
+      sp <- spearman_r(as.numeric(df$a), as.numeric(df$b))
+      data.table(binary=a, ordinal=b, wilcox_p=pW, spearman_rho=sp$rho, spearman_p=sp$p, n=nrow(df))
+    }))
+  }), fill=TRUE)
+  fwrite(BO, file.path(d_tables, "bin_ord_tests_raw.csv"))
+  
+  OO <- rbindlist(lapply(ord_cols, function(a){
+    rbindlist(lapply(setdiff(ord_cols, a), function(b){
+      df <- data.frame(a=as.numeric(X[[a]]), b=as.numeric(X[[b]]))
+      df <- df[complete.cases(df),]
+      if (nrow(df)<3) return(NULL)
+      sp <- spearman_r(df$a, df$b)
+      tab <- table(df$a, df$b)
+      pChi <- tryCatch(chisq.test(tab, correct=FALSE)$p.value, error=function(e) NA_real_)
+      data.table(ord1=a, ord2=b, spearman_rho=sp$rho, spearman_p=sp$p, chisq_p=pChi, n=nrow(df))
+    }))
+  }), fill=TRUE)
+  fwrite(OO, file.path(d_tables, "ord_ord_tests_raw.csv"))
+}
+
+infile <- file.choose()
+outdir <- choose.dir("")
+if (is.na(outdir)) stop("")
+
+dt <- fread(infile)
+
+drop_name_set <- c("ID","Id","id","Sample","sample","SampleID","Specimen","SpecimenID",
+                   "Group","group","Population","Cluster","Species","Type","Category")
+
+keep_cols <- setdiff(names(dt), intersect(names(dt), drop_name_set))
+X0 <- as.data.frame(dt[, ..keep_cols])
+
+map_to_clean <- function(x){
+  if (!is.numeric(x)) {
+    v <- trimws(as.character(x))
+    
+    v[v %in% c("Yes","YES","yes","Present","present","True","TRUE")] <- "1"
+    v[v %in% c("No","NO","no","Absent","absent","False","FALSE")]   <- "0"
+    
+    if (all(na.omit(grepl("^[-+]?[0-9]*\\.?[0-9]+$", v))))
+      return(as.numeric(v))
+    
+    if (all(na.omit(v) %in% c("0","1",0,1)))
+      return(as.numeric(v))
+    
+    return(factor(v))
+  }
+  x
+}
+
+X_all <- as.data.frame(lapply(X0, map_to_clean))
+
+outA <- file.path(outdir, "RAW_only")
+dir.create(outA, showWarnings = FALSE)
+
+generate_all(X_all, outA)
+
+cat("\n Finished:\n  • ", outA,
+    "\n  • The histogram in pair_hist_diag has its y-axis labeled as Count (other plots unchanged).\n",
+    "  • binary_sig_only/ contains clean violin plots for all binary variables.\n",
+    "  • The ordinal color palette covers levels 0–11; levels with sd==0 in continuous×ordinal plots were removed.\n",
+    sep = "")

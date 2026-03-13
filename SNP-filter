@@ -1,0 +1,39 @@
+#!/bin/bash
+#BSUB -J perl_filter_ID  
+#BSUB -n 5  
+#BSUB -q normal  
+#BSUB -R "rusage[mem=50G]"  
+#BSUB -o filter_ID.log  
+#BSUB -e filter_ID.log  
+#BSUB -m node04  
+
+#1 
+vcftools --gzvcf 668_SNP_merge.vcf.gz --maf 0.03 --max-missing 0.9 --minDP 4 --min-alleles 2 --max-alleles 2 --recode --recode-INFO-all --out 668_SNP_merge.filtered
+
+#2 
+awk 'BEGIN{OFS="\t"} /^#/ {print $0; next} {$3=$1"_"$2; print $0}' 668_SNP_merge.filtered.recode.vcf > 668_SNP_merge.filtered_ID.vcf
+
+#3 
+bgzip -c 668_SNP_merge.filtered_ID.vcf > 668_SNP_maf003_mis09_DP4_ID.vcf.gz
+
+#4 
+tabix -p vcf 668_SNP_maf003_mis09_DP4_ID.vcf.gz
+
+#5 
+plink --vcf 668_SNP_maf003_mis09_DP4_ID.vcf.gz --maf 0.03 --geno 0.1 --recode vcf-iid --out test.maf0.03.int0.9
+
+#6 
+plink --vcf test.maf0.03.int0.9.vcf --indep-pairwise 50 5 0.2 --out test.maf0.03.int0.9
+
+#7 
+plink --vcf test.maf0.03.int0.9.vcf --make-bed --extract test.maf0.03.int0.9.prune.in --out test.maf0.03.int0.9.prune.in
+
+#8 
+plink --bfile test.maf0.03.int0.9.prune.in --recode vcf-iid --out test.maf0.03.int0.9.prune.in
+
+#9 
+plink --bfile test.maf0.03.int0.9.prune.in --recode 12 --out test.maf0.03.int0.9.prune.in
+
+#10 
+plink --vcf test.maf0.03.int0.9.vcf --recode 12 transpose --output-missing-genotype 0 --out test.maf0.03.int0.9 --autosome-num 90
+

@@ -1,0 +1,153 @@
+# R
+
+library(ggplot2)
+library(dplyr)
+library(ggsignif)
+library(stringr)
+
+# ---------- Step 1----------
+cat("pheno.txt \n")
+pheno_file <- file.choose()
+
+cat("choose .raw \n")
+raw_file <- file.choose()
+
+cat("choose output \n")
+output_dir <- choose.dir(caption = "")
+
+trait_name <- tools::file_path_sans_ext(basename(raw_file))
+cat("\n ", trait_name, "\n")
+
+sig_dir <- file.path(output_dir, paste0(trait_name, "_significant"))
+nonsig_dir <- file.path(output_dir, paste0(trait_name, "_nonsignificant"))
+dir.create(sig_dir, showWarnings = FALSE)
+dir.create(nonsig_dir, showWarnings = FALSE)
+
+# ---------- Step 2----------
+geno  <- read.table(raw_file, header = TRUE, sep = "", stringsAsFactors = FALSE)
+pheno <- read.table(pheno_file, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+data_all <- merge(geno, pheno, by = c("FID", "IID"))
+
+exclude_cols <- c("FID", "IID", "Group",
+                  "Single_fruit_weight", "Fruit_overcolor",
+                  "Fruit_russeting_presence", "Astringency",
+                  "Soluble_solids_content", "Titratable_acidity",
+                  "Flesh_firmness", "Number_of_stone_cells",
+                  "Fruit_surface_color")
+geno_cols <- setdiff(names(data_all), exclude_cols)
+
+df_base <- data_all %>%
+  select(FID, IID, Group, all_of(trait_name), all_of(geno_cols)) %>%
+  filter(!is.na(.data[[trait_name]]))
+
+color_map <- c("0" = "#87CEEB", "1" = "#E5CCE5", "2" = "#FB8C62")
+
+summary_list <- data.frame(
+  SNP = character(),
+  Min_p_ttest = numeric(),
+  Any_sig = logical(),
+  stringsAsFactors = FALSE
+)
+
+# ---------- Step 3----------
+pairwise_t_minp <- function(df, gcol, ycol) {
+  lv <- levels(df[[gcol]])
+  if (length(lv) < 2) return(NA_real_)
+  comps <- combn(lv, 2, simplify = FALSE)
+  pvals <- sapply(comps, function(cc) {
+    x <- df[df[[gcol]] == cc[1], ycol, drop = TRUE]
+    y <- df[df[[gcol]] == cc[2], ycol, drop = TRUE]
+    out <- try(stats::t.test(x, y, var.equal = FALSE)$p.value, silent = TRUE)
+    if (inherits(out, "try-error")) NA_real_ else out
+  })
+  suppressWarnings(min(pvals, na.rm = TRUE))
+}
+
+# ---------- Step 4----------
+for (snp in geno_cols) {
+  
+  df_plot <- df_base %>%
+    filter(!is.na(.data[[snp]])) %>%
+    mutate(Genotype = factor(.data[[snp]]))
+  
+  if (n_distinct(df_plot$Genotype) < 2) next
+  
+  snp_label <- sub("([ACGT])_([ACGT])$", "\\1/\\2", snp)
+
+  min_p <- pairwise_t_minp(df_plot, "Genotype", trait_name)
+  any_sig <- is.finite(min_p) && (min_p < 0.05)
+  
+  summary_list <- rbind(
+    summary_list,
+    data.frame(SNP = snp, Min_p_ttest = min_p, Any_sig = any_sig)
+  )
+  
+  present_lv <- levels(df_plot$Genotype)
+  comparisons <- combn(present_lv, 2, simplify = FALSE)
+  y_positions <- seq(
+    from = max(df_plot[[trait_name]]) * 1.05,
+    by   = max(df_plot[[trait_name]]) * 0.05,
+    length.out = length(comparisons)
+  )
+  
+  p <- ggplot(df_plot, aes(x = Genotype, y = .data[[trait_name]], fill = Genotype)) +
+    geom_boxplot(color = "black", width = 0.6, outlier.shape = NA) +
+    geom_jitter(width = 0.15, size = 1.2, alpha = 0.7) +
+    scale_fill_manual(values = color_map) +
+    geom_signif(
+      comparisons = comparisons,
+      test = "t.test",
+      map_signif_level = TRUE,
+      textsize = 4,
+      y_position = y_positions
+    ) +
+    labs(title = paste0(trait_name, " at ", snp_label),
+         x = "Genotype (0/1/2)",
+         y = trait_name) +
+    theme_bw(base_size = 14) +
+    theme(panel.grid = element_blank(),
+          plot.title = element_text(hjust = 0.5, face = "bold"),
+          legend.position = "none")
+  
+  sub_dir <- if (any_sig) sig_dir else nonsig_dir
+  pdf_file <- file.path(sub_dir, paste0(snp, "_", trait_name, ".pdf"))
+  png_file <- file.path(sub_dir, paste0(snp, "_", trait_name, ".png"))
+  
+  pdf(pdf_file, width = 6, height = 5); print(p); dev.off()
+  ggsave(png_file, plot = p, width = 6, height = 5, dpi = 300)
+}
+
+# ---------- Step 5----------
+summary_file <- file.path(output_dir, paste0("haplotype_significance_summary_", trait_name, "_ttest.txt"))
+write.table(summary_list, file = summary_file, sep = "\t", quote = FALSE, row.names = FALSE)
+
+total_sig    <- sum(summary_list$Any_sig, na.rm = TRUE)
+total_nonsig <- nrow(summary_list) - total_sig
+
+pie_data <- data.frame(
+  Category = c("Significant", "Non-significant"),
+  Count    = c(total_sig, total_nonsig)
+)
+pie_data$Percent <- round(pie_data$Count / sum(pie_data$Count) * 100, 2)
+pie_data$Label   <- paste0(pie_data$Count, " (", pie_data$Percent, "%)")
+
+p_pie <- ggplot(pie_data, aes(x = "", y = Count, fill = Category)) +
+  geom_bar(width = 1, stat = "identity", color = "white") +
+  coord_polar("y", start = 0) +
+  scale_fill_manual(values = c("#FB8C62", "#00CED1")) +
+  geom_text(aes(label = Label), position = position_stack(vjust = 0.5),
+            size = 5, color = "white") +
+  theme_void(base_size = 14) +
+  labs(title = paste("Significance Summary of", trait_name, "(Welch t-test)")) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+ggsave(file.path(output_dir, paste0("haplotype_significance_pie_", trait_name, "_ttest.png")),
+       plot = p_pie, width = 5, height = 5, dpi = 300)
+ggsave(file.path(output_dir, paste0("haplotype_significance_pie_", trait_name, "_ttest.pdf")),
+       plot = p_pie, width = 5, height = 5)
+
+cat("\n：", trait_name,
+    "\n：", sig_dir,
+    "\n：", nonsig_dir,
+    "\n：", summary_file,
+    "\n：", output_dir, "\n")

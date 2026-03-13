@@ -1,0 +1,18 @@
+#!/bin/bash
+#BSUB -J snpEff  
+#BSUB -n 10  
+#BSUB -q normal  
+#BSUB -R "rusage[mem=50G]"  
+#BSUB -o snpEff.log  
+#BSUB -e snpEff.log  
+#BSUB -m node01  
+
+java -jar ./snpEff.jar -v yunhong 668_SNP_maf003_mis09_DP4_ID.vcf.gz > 668sample_snpEff.vcf.gz
+
+python3 calc_4dTv_in_eff_vcf.py 668sample_snpEff.vcf.gz 672sampel_snpeff_4dtv.vcf.gz yunhong.fa
+
+python3 vcf2phylip.py -i 668sampel_snpeff_4dtv.vcf.gz -o 668snpEff_4dtv.phy
+
+iqtree -s 668snpEff_4dtv.phy -m MF -nt 100
+
+iqtree -s 668snpEff_4dtv.phy -m PMB+F+R10 -bb 1200 -nt 90 -o apple -redo

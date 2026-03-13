@@ -1,0 +1,115 @@
+#!/bin/bash
+#BSUB -J pi
+#BSUB -n 5
+#BSUB -q normal
+#BSUB -R "rusage[mem=100G]"
+#BSUB -o pi1.log
+#BSUB -e pi1.log
+#BSUB -m node03
+
+VCFDIR="/data01/Zhangdongle/668gwas/fenqun/fenqun_vcf/1"
+OUTDIR="/data01/Zhangdongle/668gwas/fenqun/pi"
+CMD="pi_cmds.txt1"
+
+mkdir -p "$OUTDIR"
+: > "$CMD"
+
+for vcf in "$VCFDIR"/*.vcf.gz; do
+  base=$(basename "$vcf" .vcf.gz)
+  echo "vcftools --gzvcf $vcf \
+    --window-pi 10000 \
+    --window-pi-step 5000 \
+    --out $OUTDIR/${base}" >> "$CMD"
+done
+
+ParaFly -c $CMD -CPU 5
+
+# R
+# ==========
+out_dir <- choose.dir("")
+message("", out_dir)
+library(ggplot2)
+library(dplyr)
+library(openxlsx)
+
+# ==========
+pi_all  <- read.table(file.choose(), header = TRUE)
+pi_pop1 <- read.table(file.choose(), header = TRUE)
+pi_pop2 <- read.table(file.choose(), header = TRUE)
+pi_pop3 <- read.table(file.choose(), header = TRUE)
+pi_pop4 <- read.table(file.choose(), header = TRUE)
+
+# ==========
+pi_all$Group  <- "All Samples"
+pi_pop1$Group <- "P.pyrifolia"
+pi_pop2$Group <- "P.bretschneideri"
+pi_pop3$Group <- "P.ussuriensis"
+pi_pop4$Group <- "P.communis"
+
+# ==========
+pi_data <- rbind(pi_all, pi_pop1, pi_pop2, pi_pop3, pi_pop4)
+
+# ==========
+pi_data$Group <- factor(
+  pi_data$Group,
+  levels = c(
+    "All Samples",
+    "P.pyrifolia",
+    "P.bretschneideri",
+    "P.ussuriensis",
+    "P.communis"
+  )
+)
+
+# ==========
+p <- ggplot(pi_data, aes(x = Group, y = PI, fill = Group)) +
+  geom_boxplot(width = 0.6, outlier.size = 0.8) +
+  
+  scale_fill_manual(values = c(
+    "All Samples"      = "#9180AC",
+    "P.pyrifolia"      = "#D9BDD8",
+    "P.bretschneideri" = "#E58579",
+    "P.ussuriensis"    = "#9DD0C7",
+    "P.communis"       = "pink"
+  )) +
+  scale_y_continuous(limits = c(0, 0.04)) +
+  
+  labs(
+    title = NULL, 
+    x = "",
+    y = "Nucleotide diversity (π)"
+  ) +
+  
+  theme_minimal(base_size = 16) +
+  theme(
+    legend.position = "none",
+    axis.text.x  = element_text(size = 15, color = "black"),
+    axis.text.y  = element_text(size = 14, color = "black"),
+    axis.title.y = element_text(size = 17, color = "black"),
+    axis.ticks = element_line(color = "black", linewidth = 1),
+    axis.ticks.length = unit(-0.25, "cm"),  
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(
+      color = "black",
+      fill  = NA,
+      linewidth = 1.8
+    )
+  )
+
+# ===== PDF =====
+pdf(file.path(out_dir, "668_Samples_Nucleotide_Diversity.pdf"),
+    width = 8, height = 6)
+print(p)
+dev.off()
+
+# ===== PNG =====
+ggsave(
+  filename = file.path(out_dir, "668_Samples_Nucleotide_Diversity.png"),
+  plot = p,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+message("", out_dir)

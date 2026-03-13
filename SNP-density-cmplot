@@ -1,0 +1,163 @@
+#!/bin/bash
+#BSUB -J perl 
+#BSUB -n 1  
+#BSUB -q normal 
+#BSUB -R "rusage[mem=50G]"  
+#BSUB -o vcf.log  
+#BSUB -e vcf.log  
+#BSUB -m node04  
+
+awk '{print $1"\t"$4}' test.maf0.03.int0.9.full.bim > snp_pos_from_bim.tsv
+
+# R
+# ============================================================
+# SNP density plot based on PLINK .bim (CMplot stable version)
+# ============================================================
+
+# ==========
+suppressPackageStartupMessages({
+  library(data.table)
+  library(dplyr)
+  library(ggplot2)
+  library(CMplot)
+})
+
+# ==========
+out_dir <- choose.dir("")
+infile  <- file.choose()   #  snp_pos_from_bim.tsv
+prefix  <- "SNP_distribution_QC668"
+
+message("", out_dir)
+message("", infile)
+
+# ============================================================
+# Step 1
+# ============================================================
+# snp_pos_from_bim.tsv:
+# Chromosome \t Position
+map1 <- fread(
+  infile,
+  header = FALSE,
+  col.names = c("Chromosome", "Position")
+)
+
+# ============================================================
+# Step 2
+# ============================================================
+mm <- map1 %>%
+  mutate(
+    Chromosome = as.integer(Chromosome),
+    Position   = as.integer(Position),
+    SNP        = paste0("Chr", Chromosome, "_", Position)
+  ) %>%
+  filter(
+    !is.na(Chromosome),
+    Chromosome >= 1,
+    Chromosome <= 17
+  )
+
+# ============================================================
+# Step 3
+# ============================================================
+dt_chr <- mm %>%
+  count(Chromosome, name = "N") %>%
+  arrange(Chromosome)
+
+csv_path <- file.path(out_dir, paste0(prefix, "_counts_per_chr.csv"))
+fwrite(dt_chr, csv_path, sep = ",")
+
+# ===== sanity check =====
+total_snps <- sum(dt_chr$N)
+message("SNP total = ", total_snps)
+
+# ============================================================
+# Step 4
+# ============================================================
+p_bar <- ggplot(
+  dt_chr,
+  aes(x = factor(Chromosome, levels = Chromosome), y = N)
+) +
+  geom_col(fill = "#7CB9E8", color = "black", width = 0.8) +
+  labs(
+    x = "Chromosome",
+    y = "SNP count",
+    title = "SNP counts per chromosome"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank()
+  )
+
+ggsave(
+  filename = file.path(out_dir, paste0(prefix, "_counts_per_chr.png")),
+  plot = p_bar, width = 10, height = 6, dpi = 300
+)
+ggsave(
+  filename = file.path(out_dir, paste0(prefix, "_counts_per_chr.pdf")),
+  plot = p_bar, width = 10, height = 6
+)
+
+# ============================================================
+# Step 5
+# ============================================================
+mm_cmplot <- mm %>%
+  select(SNP, Chromosome, Position) %>%
+  as.data.frame()
+
+
+mm_cmplot$SNP        <- as.character(mm_cmplot$SNP)
+mm_cmplot$Chromosome <- as.numeric(mm_cmplot$Chromosome)
+mm_cmplot$Position   <- as.numeric(mm_cmplot$Position)
+
+# ============================================================
+# Step 6.
+# ============================================================
+pal_den  <- c("#4c9ac9", "#c8e0ef", "#e7f2f6",
+              "#fee8dd", "#fb8c62", "#b83945")
+bin_size <- 1e6   # 1 Mb
+
+
+old_wd <- getwd()
+setwd(out_dir)
+on.exit(setwd(old_wd), add = TRUE)
+
+# ---- PNG ----
+CMplot(
+  mm_cmplot,
+  plot.type   = "d",
+  bin.size    = bin_size,
+  chr.den.col = pal_den,
+  file.output = TRUE,
+  file        = "png",
+  file.name   = paste0(prefix, "_density_1Mb"),
+  dpi         = 300,
+  width       = 15,
+  height      = 10,
+  verbose     = TRUE,
+  main = ""
+  )
+)
+
+# ---- PDF ----
+CMplot(
+  mm_cmplot,
+  plot.type   = "d",
+  bin.size    = bin_size,
+  chr.den.col = pal_den,
+  file.output = TRUE,
+  file        = "pdf",
+  file.name   = paste0(prefix, "_density_1Mb"),
+  width       = 15,
+  height      = 10,
+  verbose     = TRUE,
+  main = ""
+  )
+)
+
+message("=== SNP density plot finished successfully ===")
+
+
+
+
+

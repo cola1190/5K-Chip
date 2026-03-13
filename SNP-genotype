@@ -1,0 +1,126 @@
+#1 .g.vcf combine
+#!/bin/bash
+#BSUB -J combine_1 
+#BSUB -n 10  
+#BSUB -q normal  
+#BSUB -o combine1.log  
+#BSUB -e combine1.log  
+#BSUB -m fat01
+
+REFERENCE=/data01/Zhangdongle/668gwas/YunhongNO.1_genome.fasta
+FOLDER=/data01/Zhangdongle/668gwas/ori
+OUTDIR=/data01/Zhangdongle/668gwas/combine_chr
+
+mkdir -p $OUTDIR
+CMD_FILE=combine_commands.list
+> $CMD_FILE
+for chr in $(seq -f "%02g" 1 17)
+do
+CMD="gatk --java-options \"-Xmx16g\" CombineGVCFs -R $REFERENCE"
+for file in $FOLDER/*.g.vcf.gz
+do
+CMD+=" -V $file"
+done
+CMD+=" -L Chr${chr} -O ${OUTDIR}/combined_Chr${chr}.g.vcf.gz"
+echo $CMD >> $CMD_FILE
+done
+
+
+ParaFly -c "$CMD_FILE " -CPU 5
+
+#2 .g.vcf genotype
+REFERENCE="/data01/Zhangdongle/668gwas/YunhongNO.1_genome.fasta"
+INPUT_DIR="/data01/Zhangdongle/668gwas/combine_chr"
+OUTPUT_DIR="/data01/Zhangdongle/668gwas/genotype"
+CMD_FILE="/data01/Zhangdongle/668gwas/1_17genotype.txt"
+
+
+mkdir -p $OUTPUT_DIR
+
+> $CMD_FILE
+
+for i in {01..17}; do
+    input_gvcf="$INPUT_DIR/combined_Chr${i}.g.vcf.gz"
+    output_vcf="$OUTPUT_DIR/668_genotype_Chr${i}.vcf.gz"
+    echo "gatk --java-options \"-Xmx10g\" GenotypeGVCFs -R $REFERENCE -V $input_gvcf -O $output_vcf" >> $CMD_FILE
+done
+
+
+ParaFly -c "$CMD_FILE " -CPU 5
+
+
+#3 filter1
+INPUT_DIR="/data01/Zhangdongle/668gwas/genotype"
+OUTPUT_DIR="/data01/Zhangdongle/668gwas/668SNP"
+REFERENCE="/data01/Zhangdongle/668gwas/YunhongNO.1_genome.fasta"
+PARAFLY_INPUT="gatk_selectvariants_commands.txt"
+
+
+mkdir -p $OUTPUT_DIR
+
+for CHR in {01..17}
+do
+    echo "gatk SelectVariants -R $REFERENCE -V $INPUT_DIR/668_genotype_Chr${CHR}.vcf.gz --select-type SNP --restrict-alleles-to BIALLELIC -O $OUTPUT_DIR/SNP_filtered_Chr${CHR}.vcf.gz" >> $PARAFLY_INPUT
+done
+
+
+ParaFly -c "$PARAFLY_INPUT " -CPU 5
+
+#4 filter2
+INPUT_DIR="/data01/Zhangdongle/668gwas/668SNP"
+OUTPUT_DIR="/data01/Zhangdongle/668gwas/668SNP_2filter"
+REFERENCE="/data01/Zhangdongle/668gwas/YunhongNO.1_genome.fasta"
+PARAFLY_INPUT="gatk_variantfiltration.txt"
+
+
+mkdir -p $OUTPUT_DIR
+
+
+for CHR in {01..17}
+do
+    echo "gatk VariantFiltration -R $REFERENCE -V $INPUT_DIR/SNP_filtered_Chr${CHR}.vcf.gz --filter-expression \"QD < 2.0 || FS > 60.0 || MQ < 40.0 || SOR > 3.0 || MQRankSum < -12.5 || ReadPOSRankSum < -8.0 || QUAL < 30.0\" --filter-name \"Filter\" -O $OUTPUT_DIR/SNP_filtered_high_quality_Chr${CHR}.vcf.gz" >> $PARAFLY_INPUT
+done
+
+
+ParaFly -c "$PARAFLY_INPUT " -CPU 5
+
+#5 filter3
+INPUT_DIR="/data01/Zhangdongle/668gwas/668SNP_2filter"
+OUTPUT_DIR="/data01/Zhangdongle/668gwas/668select_filter_SNP"
+REFERENCE="/data01/Zhangdongle/668gwas/YunhongNO.1_genome.fasta"
+PARAFLY_INPUT="select_variants_commands.txt"
+
+
+mkdir -p "$OUTPUT_DIR"
+
+
+> "$PARAFLY_INPUT"
+
+
+for FILE in "$INPUT_DIR"/*.vcf.gz; do
+
+    BASENAME=$(basename "$FILE")
+
+
+    OUTPUT_FILE="$OUTPUT_DIR/selected_$BASENAME"
+
+
+    echo "gatk SelectVariants -R $REFERENCE -V $FILE --exclude-filtered true -O $OUTPUT_FILE" >> "$PARAFLY_INPUT"
+done
+
+echo "Commands written to $PARAFLY_INPUT"
+
+
+ParaFly -c "$PARAFLY_INPUT" -CPU 5
+
+#6 merge
+
+INPUT_DIR="/data01/Zhangdongle/668gwas/668select_filter_SNP"
+OUTPUT_FILE="/data01/Zhangdongle/668gwas/668select_filter_SNP/668_SNP_merge.vcf.gz"
+REFERENCE="/data01/Zhangdongle/668gwas/YunhongNO.1_genome.fasta"
+
+# GATK MergeVcfs 
+gatk --java-options "-Xmx32g" MergeVcfs \
+  $(find "$INPUT_DIR" -name "*.vcf.gz" -exec echo -I {} \;) \
+  -O "$OUTPUT_FILE"
+

@@ -1,0 +1,96 @@
+#!/bin/bash
+#BSUB -J perl_GWAS  
+#BSUB -n 50  
+#BSUB -q normal  
+#BSUB -R "rusage[mem=50G]"  
+#BSUB -o GWAS.log  
+#BSUB -e GWAS.log  
+#BSUB -m node04  
+
+emmax-kin-intel64 test.maf0.03.int0.9 -v -d 10 -o test.maf0.03.int0.9.BN.kinf
+
+emmax -v -d 10 -t test.maf0.03.int0.9 -o test_emmax_cov -p test_trait_emmax.txt -k test.maf0.03.int0.9.BN.kinf -c test.cov.emmax.txt
+
+folder_path="/localstorage/home/dongle/668gwas/result"
+
+for file in "$folder_path"/*.ps; do
+    if [[ -f $file ]]; then
+        max_log_p=$(awk 'NR > 1 {if ($4 != 0 && ($4 < min || min == "")) min = $4} END {if (min != "") print -log(min)/log(10); else print "N/A"}' "$file")
+        echo "File: $file"
+        echo "Max -log10(P): $max_log_p"
+        echo "-----------------------"
+    fi
+done
+
+# R
+library(qqman)
+library(tidyverse)
+
+folder_path <- "/localstorage/home/dongle/668gwas/668gwas/result/result_20"
+output_dir <- "/localstorage/home/dongle/668gwas/qqman"
+
+file_list <- list.files(path = folder_path, full.names = TRUE)
+
+get_file_name <- function(file_path) {
+  return(basename(file_path))
+}
+
+process_file <- function(file_path) {
+  file_name <- get_file_name(file_path)
+  gwas <- read.table(file_path, header = FALSE, stringsAsFactors = FALSE)
+  colnames(gwas) <- c("SNP", "BETA", "SE", "P")
+
+  splite_chr <- function(data, c) {
+    c(str_split(data[c], pattern = "_")[[1]][1])
+  }
+
+  splite_pos <- function(data, c) {
+    c(str_split(data[c], pattern = "_")[[1]][2])
+  }
+
+  gwas$CHR <- apply(gwas, 1, splite_chr, c = "SNP")
+  gwas$BP <- apply(gwas, 1, splite_pos, c = "SNP")
+
+  gwas$CHR <- as.numeric(gsub("Chr", "", gwas$CHR))
+
+  gwas$BP <- as.numeric(gwas$BP)
+
+  chrlabs <- as.character(1:17)  
+  gwas <- gwas %>% select(SNP, CHR, BP, P)
+
+  pdf(file.path(output_dir, paste0(file_name, "_qq.pdf")), width = 8, height = 6)
+  qq(gwas$P, main = paste0("Q-Q plot of ", file_name), xlim = c(0, 10),
+     ylim = c(0, 12), pch = 18, col = "blue4", cex = 1.5, las = 1)
+  dev.off()
+
+  png(file.path(output_dir, paste0(file_name, "_qq.png")), width = 800, height = 600)
+  qq(gwas$P, main = paste0("Q-Q plot of ", file_name), xlim = c(0, 10),
+     ylim = c(0, 12), pch = 18, col = "blue4", cex = 1.5, las = 1)
+  dev.off()
+
+  pdf(file.path(output_dir, paste0(file_name, "_manhattan.pdf")), width = 12, height = 6)
+  manhattan(gwas, main = paste0(file_name, " Manhattan"), annotatePval = 0.001, suggestiveline = FALSE,
+            col = c("#31497a", "#40C0E0"), genomewideline = FALSE, ylim = c(0, 20))
+  abline(h = 5, col = "black", lty = 2)  
+  dev.off()
+
+  png(file.path(output_dir, paste0(file_name, "_manhattan.png")), width = 5000, height = 2500, type = "cairo", res = 300)
+  manhattan(gwas, main = paste0(file_name, " Manhattan"), annotatePval = 0.001, suggestiveline = FALSE,
+            col = c("#31497a", "#40C0E0"), genomewideline = FALSE, ylim = c(0, 20))
+  abline(h = 5, col = "black", lty = 2)  
+  dev.off()
+
+  png(file.path(output_dir, paste0(file_name, "_manhattan_no_annotation.png")), width = 5000, height = 2500, type = "cairo", res = 300)
+  manhattan(gwas, main = paste0(file_name, " Manhattan"), suggestiveline = FALSE,
+            col = c("#31497a", "#40C0E0"), genomewideline = FALSE, ylim = c(0, 20))
+  abline(h = 5, col = "black", lty = 2)  
+  dev.off()
+
+  gc()
+}
+
+for (file in file_list) {
+  process_file(file)
+}
+
+gc()

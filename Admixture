@@ -1,0 +1,12 @@
+#!/bin/bash
+#BSUB -J perl_filter_ID  
+#BSUB -n 85  
+#BSUB -q normal  
+#BSUB -R "rusage[mem=50G]"  
+#BSUB -o filter_ID.log  
+#BSUB -e filter_ID.log 
+#BSUB -m node05  
+
+for i in {2..13}; do
+  admixture --cv test.maf0.03.int0.9.full.bed ${i} -j80 >> admixture/admixture2_13.txt
+done
